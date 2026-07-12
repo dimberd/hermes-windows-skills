@@ -13,6 +13,101 @@ tags: [windows, windows-10, windows-11, security, hardening, sysadmin, defender,
 
 ---
 
+## 0. Віддалена діагностика Windows через SSH
+
+### Ключові інструменти для SSH-діагностики
+
+| Інструмент | Призначення | Команда встановлення |
+|------------|-------------|---------------------|
+| **Sysinternals Suite** (CLI) | Autoruns, psloglist, handle, psfile | `curl -L "https://download.sysinternals.com/files/SysinternalsSuite.zip" -o "$env:TEMP\Sysinternals.zip"` |
+| **PowerShell Base64** | Виконання складних команд без ламання bash | `[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))` |
+| **Get-WinEvent** | Читання Event Log | Фільтри: `@{LogName="System"; Id=41,6008,1074; Level=1}` |
+| **Get-PhysicalDisk** | S.M.A.R.T. стан | `Get-PhysicalDisk \| Where HealthStatus -ne "Healthy"` |
+| **PSWindowsUpdate** | Статус оновлень | `Install-Module PSWindowsUpdate -Force` |
+
+### Аналіз вимкнень (Kernel-Power)
+
+```powershell
+# Всі несподівані вимкнення
+Get-WinEvent -FilterHashtable @{LogName="System"; Id=41} -MaxEvents 50
+
+# Повна картина: хто і чому перезавантажив
+Get-WinEvent -FilterHashtable @{LogName="System"; Id=1074} -MaxEvents 30 | ForEach-Object {
+  $m = $_.Message
+  $user = if ($m -match "on behalf of user (.+?) for") { $matches[1] } else { "?" }
+  Write-Host "$($_.TimeCreated) | user: $user"
+}
+
+# BSOD звіти
+Get-WinEvent -FilterHashtable @{LogName="Application"; Id=1001} -MaxEvents 20
+```
+
+### S.M.A.R.T. та диски
+
+```powershell
+# Фізичний стан
+Get-PhysicalDisk | Select-Object FriendlyName, MediaType, Size, HealthStatus, OperationalStatus
+
+# Логічні томи з відсотками
+Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Object {
+  [PSCustomObject]@{
+    Disk = $_.DeviceID
+    SizeGB = [math]::Round($_.Size/1GB, 1)
+    FreeGB = [math]::Round($_.FreeSpace/1GB, 1)
+    FreePct = [math]::Round($_.FreeSpace/$_.Size*100, 1)
+  }
+}
+```
+
+### Pomylki WHEA (апаратні)
+
+```powershell
+Get-WinEvent -FilterHashtable @{LogName="System"; ProviderName="Microsoft-Windows-WHEA-Logger"} -MaxEvents 20
+```
+
+### Reliability Monitor
+
+```powershell
+Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-Diagnostics-Performance/Operational"; Id=100,101,200,201} -MaxEvents 30
+```
+
+### Відправка скрипта через SCP
+
+```bash
+# Проблема: SCP на Windows з кириличними папками може не знайти Desktop
+# Рішення: копіювати в $env:USERPROFILE або через PowerShell + Base64
+
+# 1. Через scp (якщо шлях без кирилиці)
+scp -i key script.ps1 user@host:"C:/Users/user/script.ps1"
+
+# 2. Через Base64 PowerShell
+$b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("script.ps1"))
+# На віддаленій машині:
+$b = [Convert]::FromBase64String("$b64")
+[IO.File]::WriteAllBytes("$env:USERPROFILE\script.ps1", $b)
+
+# 3. Розбиття на частини, якщо скрипт > 2000 символів
+```
+
+### Діагностичний скрипт
+
+Повний скрипт `denisboss_diag.ps1` (зберігається в `C:\hermes_work\secure\`):
+- Збирає: Kernel-Power 41, BSOD, WHEA, S.M.A.R.T., Reliability, перезавантаження, диски, мережа, Windows Update
+- Виводить у файл + консоль
+- Використання: `powershell -ExecutionPolicy Bypass -File diag.ps1`
+
+### Cron моніторинг
+
+```python
+# no_agent=True скрипт denisboss_monitor.py:
+# - Кожні 10 хв перевіряє чи доступний хост через ping + SSH
+# - Якщо недоступний — записує час
+# - Коли повертається — збирає нові Kernel-Power 41
+# - Сповіщає при нових вимкненнях
+```
+
+---
+
 ## 1. Windows Security Hardening (Захист системи)
 
 ### 1.1 Microsoft Security Baselines
@@ -541,6 +636,91 @@ powercfg -SETACTIVE SCHEME_BALANCED
 powercfg -SETACTIVE SCHEME_MIN
 ```
 
+### 8.7 Віддалене налаштування живлення через SSH
+
+Коли потрібно налаштувати план живлення на **віддаленому** Windows ПК (наприклад, щоб він не вимикався і був постійно доступний для SSH):
+
+#### Мінімальний набір для always-on віддаленого ПК
+
+```powershell
+# Сон — НІКОЛИ
+powercfg /CHANGE standby-timeout-ac 0
+powercfg /CHANGE standby-timeout-dc 0
+powercfg /CHANGE hibernate-timeout-ac 0
+powercfg /CHANGE hibernate-timeout-dc 0
+
+# Гібернація — вимкнути
+powercfg /H OFF
+
+# Диски — НІКОЛИ
+powercfg /CHANGE disk-timeout-ac 0
+powercfg /CHANGE disk-timeout-dc 0
+
+# Екран — 10 хв (пробудження по миші/клавіші)
+powercfg /CHANGE monitor-timeout-ac 10
+powercfg /CHANGE monitor-timeout-dc 10
+
+# USB selective suspend — ВИМКНЕНО
+powercfg /SETACVALUEINDEX SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0
+powercfg /SETDCVALUEINDEX SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0
+
+# Мережевий адаптер — енергозбереження OFF (через registry)
+$regPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}"
+Get-ChildItem $regPath | ForEach-Object {
+    $desc = (Get-ItemProperty $_.PSPath).DriverDesc
+    if ($desc -and $desc -eq (Get-NetAdapter -Physical | Where Status -eq "Up").InterfaceDescription) {
+        Set-ItemProperty $_.PSPath -Name "PnPCapabilities" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+    }
+}
+# Через NetAdapter
+Get-NetAdapter -Physical | Where-Object { $_.Status -eq "Up" } | Disable-NetAdapterPowerManagement -ErrorAction SilentlyContinue
+```
+
+#### Виконання через SSH (з git-bash)
+
+**Проблема:** PowerShell команди з `$`, `@`, `{` ламаються через bash підстановку.
+
+**✅ Найкраще через Base64 EncodedCommand:**
+```python
+import base64
+ps_command = """
+powercfg /CHANGE standby-timeout-ac 0
+...
+"""
+encoded = base64.b64encode(ps_command.encode('utf-16le')).decode()
+ssh user@ip "powershell -EncodedCommand {encoded}"
+```
+
+**✅ Або через .ps1 файл (scp + ssh):**
+```bash
+# Копіюємо скрипт
+scp -i key script.ps1 user@ip:C:\\temp\\power.ps1
+# Виконуємо
+ssh -i key user@ip "powershell -NoProfile -File C:\\temp\\power.ps1"
+```
+
+**Параметри для always-on сервера:**
+
+| Параметр | Значення | Чому |
+|----------|----------|------|
+| `standby-timeout` | 0 | Ніколи не спати — SSH має бути доступний |
+| `hibernate-timeout` | 0 | Ніколи не гібернувати |
+| `disk-timeout` | 0 | Диски не вимикати (для швидкого доступу) |
+| `monitor-timeout` | 10 хв | Екран гасне, але ПК працює |
+| USB selective suspend | 0 (OFF) | Мишка/клавіатура будять екран |
+| NIC power saving | OFF | Мережа завжди активна |
+| PnPCapabilities | 0 | Вимкнення енергозбереження драйвера мережі |
+
+#### Перевірка результату
+
+```powershell
+# Через SSH
+ssh -i key user@ip "powershell powercfg /Q SCHEME_CURRENT SUB_SLEEP"
+ssh -i key user@ip "powershell powercfg /Q SCHEME_CURRENT SUB_DISK"
+ssh -i key user@ip "powershell powercfg /Q SCHEME_CURRENT SUB_VIDEO"
+ssh -i key user@ip "powershell powercfg /Q SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3"
+```
+
 ---
 
 ## 9. Task Scheduler — автозапуск без логіну (S4U) та SYSTEM elevation
@@ -928,9 +1108,27 @@ Get-CimInstance Win32_SystemDriver | Where-Object {
 
 В PSReadLine 2.4.5 `HistoryNoDuplicates` — switch-параметр, не приймає значення. `-HistoryNoDuplicates $true` викине помилку `A positional parameter cannot be found that accepts argument 'True'`.
 
+### PowerShell Execution Policy — Bypass для одного скрипта
+
+`references/powershell-execution-policy.md` — детальний гайд.
+
+Коли користувач отримує:
+```
+.\script.ps1 : File cannot be loaded because running scripts is disabled
+```
+
+**Швидке рішення:**
+```powershell
+PowerShell -ExecutionPolicy Bypass .\script.ps1
+```
+
+Патерн `-ExecutionPolicy Bypass` — тимчасовий, не змінює системну політику. Використовувати для разових скриптів (завантажені з інтернету, від колеги, скрипти налаштування). Для постійного використання — `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser`.
+
+Див. `references/powershell-execution-policy.md` для всіх варіантів (Bypass, RemoteSigned, Unrestricted, AllSigned).
+
 ### powershell.config.json
 
-`C:\Program Files\PowerShell\7\powershell.config.json` встановлює системну політику виконання:
+`C:\\Program Files\\PowerShell\\7\\powershell.config.json` встановлює системну політику виконання:
 ```json
 {
   "Microsoft.PowerShell:ExecutionPolicy": "RemoteSigned",

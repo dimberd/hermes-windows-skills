@@ -170,7 +170,16 @@ hermes-windows-skills/
 ├── scripts/
 │   ├── install.sh             # Automated installation
 │   ├── verify.sh              # Post-installation verification
-│   └── uninstall.sh           # Removal script
+│   ├── uninstall.sh           # Removal script
+│   ├── denisboss_diag.ps1     # Remote Windows diagnostic script (17 checks)
+│   ├── denisboss_monitor.py   # Cron-based remote PC uptime monitor
+│   ├── full_backup.py         # Full backup automation
+│   ├── hermes_diag.py         # Hermes ecosystem diagnostics
+│   ├── hermes_update_check.py # Staged update checker
+│   ├── pre_update_backup.py   # Pre-update configuration backup
+│   ├── proc_watchdog.py       # Background zombie process killer
+│   ├── ps_monitor.py          # PowerShell window spawn monitor
+│   └── vs_code_helper.py      # Safe VS Code launcher
 ├── skills/
 │   ├── windows-computer-use/  # Windows desktop automation skill
 │   │   ├── SKILL.md           # Main skill document
@@ -217,7 +226,7 @@ Each skill is a self-contained `SKILL.md` file with standardized frontmatter tha
 | `windows-automation-enhanced` | 1.0.0 | Low-level Windows automation beyond computer_use: SendMessage, Win32 API, UI Automation | Python, pywin32 |
 | `windows-diagnostics` | 1.0.0 | Windows 11 system diagnostics via PowerShell and Sysinternals | PowerShell ≥ 5.1 |
 | `windows-chrome-automation` | 1.0.0 | Fast Chrome + Windows 11 automation via Win32 API + CDP | Chrome, Python |
-| `windows-system-administration` | 1.0.0 | Comprehensive Windows system administration & security hardening | Administrator |
+|| `windows-system-administration` | 1.1.0 | Remote Windows diagnostics via SSH, Sysinternals Suite, Event Log analysis, S.M.A.R.T., WHEA, BSOD, cron monitoring | Administrator, SSH, Tailscale |
 | `windows-wsl-python-setup` | 1.0.0 | Python project setup from GitHub on Windows/WSL | WSL, Python |
 | `windows-remote-access-setup` | 1.0.0 | Setup remote access via AnyDesk, RustDesk, Tailscale SSH | Network |
 | `windows-remote-access-tailscale-ssh` | 1.0.0 | Remote access via Tailscale SSH — no password, no open ports | Tailscale |
@@ -270,7 +279,65 @@ For this collection:
 ~/.hermes/skills/windows-computer-use/SKILL.md
 ```
 
-### 8.3 Deploying to Multiple Hermes Profiles
+### 8.3 Remote Windows Diagnostics via SSH
+
+Perform comprehensive diagnostics on a remote Windows PC via Tailscale SSH:
+
+```bash
+# Run the all-in-one diagnostic script on a remote PC
+scp -i ~/.ssh/key scripts/denisboss_diag.ps1 user@100.x.x.x:~/diag.ps1
+ssh -i ~/.ssh/key user@100.x.x.x "powershell -ExecutionPolicy Bypass -File ~/diag.ps1"
+```
+
+**What the diagnostic script checks:**
+- Kernel-Power 41 (unexpected shutdowns)
+- BSOD / Windows Error Reporting (Event ID 1001)
+- Minidump files presence
+- WHEA hardware errors
+- Disk S.M.A.R.T. health and free space
+- Windows Update history
+- Active network connections
+- CPU/RAM/disk load
+- CHKDSK pending status
+- Reliability Monitor events
+
+**Automated cron monitoring:**
+
+```bash
+# Create a cron job that checks the remote PC every 10 minutes
+# When the PC goes offline, records the time
+# When it comes back, checks for new Kernel-Power events
+hermes cron create \
+  --name "Remote PC Monitor" \
+  --schedule "every 10m" \
+  --script denisboss_monitor.py \
+  --no-agent
+```
+
+**Power management for always-on remote access:**
+
+```powershell
+# Set power plan: never sleep, never hibernate
+powercfg /CHANGE standby-timeout-ac 0
+powercfg /CHANGE standby-timeout-dc 0
+powercfg /CHANGE hibernate-timeout-ac 0
+powercfg /CHANGE hibernate-timeout-dc 0
+powercfg /H OFF
+powercfg /CHANGE disk-timeout-ac 0
+powercfg /CHANGE disk-timeout-dc 0
+powercfg /CHANGE monitor-timeout-ac 10
+```
+
+**Install Sysinternals Suite on remote PC for advanced diagnostics:**
+
+```powershell
+curl.exe -sL "https://download.sysinternals.com/files/SysinternalsSuite.zip" -o "$env:TEMP\Sysinternals.zip"
+Expand-Archive "$env:TEMP\Sysinternals.zip" -DestinationPath "C:\Tools\Sysinternals" -Force
+```
+
+Key CLI tools: `autorunsc.exe` (startup), `psloglist.exe` (event log), `handle64.exe` (file locks).
+
+### 8.4 Deploying to Multiple Hermes Profiles
 
 ```bash
 # Install to a specific profile
@@ -333,6 +400,7 @@ This project is licensed under the **MIT License** — see the [LICENSE](LICENSE
 
 ## Document History
 
-| Version | Date | Author | Description |
-|---------|------|--------|-------------|
-| 1.0.0 | 2026-07-11 | Hermes Windows Skills Contributors | Initial release |
+|| Version | Date | Author | Description |
+||---------|------|--------|-------------|
+|| 1.1.0 | 2026-07-12 | Hermes Windows Skills Contributors | Added remote Windows diagnostics via SSH, Sysinternals Suite installation, cron monitoring, power management for always-on access |
+|| 1.0.0 | 2026-07-11 | Hermes Windows Skills Contributors | Initial release |

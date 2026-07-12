@@ -1,6 +1,6 @@
 ---
 name: windows-diagnostics
-description: Проведення діагностики Windows 11 через PowerShell та Sysinternals — пошук зайвих процесів, автозапуску, служб, мережевих з'єднань
+description: Проведення діагностики Windows 11 через PowerShell та Sysinternals — пошук зайвих процесів, автозапуску, служб, віддалена діагностика через SSH
 ---
 
 # Windows Diagnostics
@@ -56,7 +56,39 @@ autorunsc64.exe -nobanner -accepteula -a t -c -m -s -o autoruns_tasks.csv
 - `-c` CSV output; `-m` hide Microsoft entries; `-s` verify signatures; `-o <file>` write to file
 - `-a "*"` for all categories (use quotes to prevent bash glob expansion)
 - CSV is UTF-16 encoded — use `Import-Csv -Encoding Unicode` in PowerShell
-- `-nobanner` suppresses the copyright banner
+|- `-nobanner` suppresses the copyright banner
+
+### 8. Віддалена діагностика через SSH
+
+```bash
+# Копіювати діагностичний скрипт на віддалений ПК
+scp -i ~/.ssh/key denisboss_diag.ps1 user@100.x.x.x:~/diag.ps1
+
+# Виконати
+ssh -i ~/.ssh/key user@100.x.x.x "powershell -ExecutionPolicy Bypass -File ~/diag.ps1"
+```
+
+**Ключові Event IDs для діагностики вимкнень:**
+
+| Event ID | Джерело | Опис |
+|----------|---------|------|
+| 41 | Kernel-Power | Несподіване вимкнення/перезавантаження |
+| 1074 | User32 | Чисте перезавантаження (хто ініціював) |
+| 6008 | EventLog | Попереднє завершення було неочікуваним |
+| 1001 | Windows Error Reporting | BSOD звіт |
+
+**Sysinternals на віддаленому ПК:**
+
+```powershell
+curl.exe -sL "https://download.sysinternals.com/files/SysinternalsSuite.zip" -o "$env:TEMP\Sysinternals.zip"
+Expand-Archive "$env:TEMP\Sysinternals.zip" -DestinationPath "C:\Tools\Sysinternals" -Force
+```
+
+**Cron моніторинг (Hermes no_agent скрипт):**
+
+```bash
+hermes cron create --name "Remote PC Monitor" --schedule "every 10m" --script denisboss_monitor.py --no-agent
+```
 
 ### 8. Memory analysis by process group
 ```powershell
